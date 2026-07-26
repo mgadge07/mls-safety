@@ -1,8 +1,8 @@
 // =============================================================================
--- MLS SAFETY — Phase 1
--- Daily Vehicle + Trailer inspections via QR, categorized checks, signature,
--- problem photos, and automated audit trail.
--- =============================================================================
+// MLS SAFETY — Phase 1
+// Daily Vehicle + Trailer inspections via QR, categorized checks, signature,
+// problem photos, and automated audit trail.
+// =============================================================================
 
 import { useState } from 'react';
 import { COLOR, button } from './theme';
