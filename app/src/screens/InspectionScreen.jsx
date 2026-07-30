@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { COLOR, button, card } from '../theme';
 
 // Category definitions (Monday vs Daily)
@@ -159,6 +159,8 @@ function isMonday() {
   return new Date().getDay() === 1; // 1 = Monday
 }
 
+const MAX_PHOTOS_PER_CATEGORY = 3;
+
 export default function InspectionScreen({ unitType, unit, onComplete, onCancel }) {
   const isFull = isMonday();
   const categories = useMemo(() => {
@@ -170,7 +172,10 @@ export default function InspectionScreen({ unitType, unit, onComplete, onCancel 
     Object.fromEntries(categories.map(c => [c.key, null]))
   );
   const [problems, setProblems] = useState({});
-  // photos will be handled later
+  // photos: { [categoryKey]: [{ file, previewUrl }] }
+  const [photos, setPhotos] = useState({});
+  const [validationError, setValidationError] = useState(null);
+  const fileInputRefs = useRef({});
 
   const unitNumber = unitType === 'vehicle' ? unit.vehicle_number : unit.trailer_number;
   const allAnswered = categories.every(c => statuses[c.key] !== null);
@@ -184,6 +189,13 @@ export default function InspectionScreen({ unitType, unit, onComplete, onCancel 
         delete next[key];
         return next;
       });
+      setPhotos(prev => {
+        const removed = prev[key] || [];
+        removed.forEach(p => URL.revokeObjectURL(p.previewUrl));
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     }
   }
 
@@ -191,21 +203,53 @@ export default function InspectionScreen({ unitType, unit, onComplete, onCancel 
     setProblems(prev => ({ ...prev, [key]: text }));
   }
 
+  function addPhotos(key, fileList) {
+    const files = Array.from(fileList || []).filter(f => f.type.startsWith('image/'));
+    if (!files.length) return;
+    setPhotos(prev => {
+      const existing = prev[key] || [];
+      const room = MAX_PHOTOS_PER_CATEGORY - existing.length;
+      const added = files.slice(0, Math.max(0, room)).map(file => ({
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }));
+      return { ...prev, [key]: [...existing, ...added] };
+    });
+    setValidationError(null);
+  }
+
+  function removePhoto(key, index) {
+    setPhotos(prev => {
+      const list = [...(prev[key] || [])];
+      const [removed] = list.splice(index, 1);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return { ...prev, [key]: list };
+    });
+  }
+
   function handleContinue() {
     if (!allAnswered) return;
-    // Basic validation: if problem, require description
+    // Validation: a problem requires a description AND at least one photo
     for (const c of categories) {
-      if (statuses[c.key] === 'problem' && !(problems[c.key] || '').trim()) {
-        alert(`Please describe the problem in "${c.label}"`);
-        return;
+      if (statuses[c.key] === 'problem') {
+        if (!(problems[c.key] || '').trim()) {
+          setValidationError(`Please describe the problem in "${c.label}"`);
+          return;
+        }
+        if (!(photos[c.key] || []).length) {
+          setValidationError(`Please add a photo of the problem in "${c.label}"`);
+          return;
+        }
       }
     }
+    setValidationError(null);
     onComplete({
       categories: categories.map(c => ({
         key: c.key,
         label: c.label,
         status: statuses[c.key],
         problem_description: problems[c.key] || null,
+        photos: (photos[c.key] || []).map(p => p.file),
       })),
       is_monday_full: isFull,
       overall_status: hasProblems ? 'has_problems' : 'all_good',
@@ -288,13 +332,73 @@ export default function InspectionScreen({ unitType, unit, onComplete, onCancel 
                   border: `1px solid ${COLOR.border}`, fontSize: 14, resize: 'vertical',
                 }}
               />
-              <div style={{ marginTop: 8, fontSize: 13, color: COLOR.textDim }}>
-                Photo capture will be added here (required for problems)
+
+              <div style={{ marginTop: 10 }}>
+                <input
+                  ref={el => { fileInputRefs.current[cat.key] = el; }}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={e => {
+                    addPhotos(cat.key, e.target.files);
+                    e.target.value = ''; // allow re-selecting the same file
+                  }}
+                />
+
+                {(photos[cat.key] || []).length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                    {(photos[cat.key] || []).map((p, i) => (
+                      <div key={i} style={{ position: 'relative' }}>
+                        <img
+                          src={p.previewUrl}
+                          alt={`Problem photo ${i + 1}`}
+                          style={{
+                            width: 72, height: 72, objectFit: 'cover',
+                            borderRadius: 8, border: `1px solid ${COLOR.border}`,
+                          }}
+                        />
+                        <button
+                          onClick={() => removePhoto(cat.key, i)}
+                          aria-label="Remove photo"
+                          style={{
+                            position: 'absolute', top: -6, right: -6,
+                            width: 22, height: 22, borderRadius: 999,
+                            background: COLOR.red, color: '#fff', border: 'none',
+                            fontSize: 12, lineHeight: '22px', cursor: 'pointer', padding: 0,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(photos[cat.key] || []).length < MAX_PHOTOS_PER_CATEGORY && (
+                  <button
+                    onClick={() => fileInputRefs.current[cat.key]?.click()}
+                    style={{
+                      width: '100%', padding: '11px', borderRadius: 8,
+                      background: 'transparent', border: `1px dashed ${COLOR.border}`,
+                      color: COLOR.textDim, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    {(photos[cat.key] || []).length ? 'Add Another Photo' : 'Add Photo (required)'}
+                  </button>
+                )}
               </div>
             </div>
           )}
         </div>
       ))}
+
+      {validationError && (
+        <div style={{ color: COLOR.red, fontSize: 14, marginTop: 12, textAlign: 'center' }}>
+          {validationError}
+        </div>
+      )}
 
       <button
         style={{ ...button('primary', !allAnswered), marginTop: 12 }}
