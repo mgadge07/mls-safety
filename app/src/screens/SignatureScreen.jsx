@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import SignatureCanvas from 'react-signature-canvas';
 import { COLOR, button } from '../theme';
 
-export default function SignatureScreen({ unit, unitType, inspectionResult, onSubmit, onBack }) {
+export default function SignatureScreen({ unit, unitType, inspectionResult, onSubmit, onBack, saving, submitError }) {
   const sigRef = useRef(null);
   const [employeeNumber, setEmployeeNumber] = useState('');
   const [error, setError] = useState(null);
@@ -10,6 +10,7 @@ export default function SignatureScreen({ unit, unitType, inspectionResult, onSu
   const unitNumber = unitType === 'vehicle' ? unit.vehicle_number : unit.trailer_number;
 
   function handleSubmit() {
+    if (saving) return;
     if (!sigRef.current || sigRef.current.isEmpty()) {
       setError('Signature is required');
       return;
@@ -82,13 +83,17 @@ export default function SignatureScreen({ unit, unitType, inspectionResult, onSu
       {error && (
         <div style={{ color: COLOR.red, fontSize: 14, marginBottom: 12 }}>{error}</div>
       )}
+      {submitError && (
+        <div style={{ color: COLOR.red, fontSize: 14, marginBottom: 12 }}>{submitError}</div>
+      )}
 
-      <button style={button('primary')} onClick={handleSubmit}>
-        Submit Inspection
+      <button style={button('primary', saving)} onClick={handleSubmit} disabled={saving}>
+        {saving ? 'Submitting…' : 'Submit Inspection'}
       </button>
 
       <button
         onClick={() => sigRef.current?.clear()}
+        disabled={saving}
         style={{
           background: 'none', border: 'none', color: COLOR.textDim,
           fontSize: 14, marginTop: 14, cursor: 'pointer',
