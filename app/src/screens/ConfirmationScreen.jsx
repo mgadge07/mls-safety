@@ -1,6 +1,6 @@
 import { COLOR, button } from '../theme';
 
-export default function ConfirmationScreen({ unit, unitType, gpsRecorded, onHome }) {
+export default function ConfirmationScreen({ unit, unitType, onHome }) {
   const unitNumber = unitType === 'vehicle' ? unit?.vehicle_number : unit?.trailer_number;
   const now = new Date();
 
@@ -28,7 +28,6 @@ export default function ConfirmationScreen({ unit, unitType, gpsRecorded, onHome
       <p style={{ color: COLOR.textDim, fontSize: 15, lineHeight: 1.5, marginBottom: 36 }}>
         {unitType === 'vehicle' ? 'Vehicle' : 'Trailer'} {unitNumber}<br />
         {now.toLocaleDateString()} • {now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-        <br />{gpsRecorded ? 'GPS recorded' : 'GPS not available'}
       </p>
 
       <button style={{ ...button('primary'), maxWidth: 280 }} onClick={onHome}>
