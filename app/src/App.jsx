@@ -32,6 +32,35 @@ function getGps() {
   });
 }
 
+// Shrink a photo before upload so files stay small on crew data plans and on
+// the storage free tier: longest side 1280px, JPEG ~72% quality (~150-400 KB).
+function compressImage(file, maxDim = 1280, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        blob => (blob ? resolve(blob) : reject(new Error('Could not process photo'))),
+        'image/jpeg',
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not read photo'));
+    };
+    img.src = url;
+  });
+}
+
 export default function App() {
   // Simple state machine for Phase 1 (no router needed)
   const [screen, setScreen] = useState('home'); // home | scan | inspect | sign | done
@@ -66,10 +95,42 @@ export default function App() {
     try {
       const gps = await getGps();
 
-      // Generate the inspection id on the device so we can link the category
-      // rows to it without needing read access to the inspections table.
+      // Generate ids on the device so we can link category and photo rows
+      // without needing read access to the tables.
       const inspectionId = crypto.randomUUID();
 
+      const categoryRows = finalPayload.categories.map((c, i) => ({
+        id: crypto.randomUUID(),
+        inspection_id: inspectionId,
+        category_key: c.key,
+        category_label: c.label,
+        status: c.status,
+        problem_description: c.problem_description,
+        sort_order: i,
+      }));
+
+      // 1. Upload problem photos to storage first (most failure-prone step —
+      //    if it fails, nothing has been written to the database yet).
+      const photoRows = [];
+      for (let i = 0; i < finalPayload.categories.length; i++) {
+        const c = finalPayload.categories[i];
+        const files = c.photos || [];
+        for (let n = 0; n < files.length; n++) {
+          const blob = await compressImage(files[n]);
+          const path = `${inspectionId}/${c.key}-${n + 1}.jpg`;
+          const { error: upErr } = await supabase.storage
+            .from('inspection-photos')
+            .upload(path, blob, { contentType: 'image/jpeg' });
+          if (upErr) throw upErr;
+          photoRows.push({
+            inspection_id: inspectionId,
+            category_id: categoryRows[i].id,
+            storage_path: path,
+          });
+        }
+      }
+
+      // 2. Inspection record
       const { error: inspErr } = await supabase.from('inspections').insert({
         id: inspectionId,
         type: unitType,
@@ -87,18 +148,19 @@ export default function App() {
       });
       if (inspErr) throw inspErr;
 
-      const categoryRows = finalPayload.categories.map((c, i) => ({
-        inspection_id: inspectionId,
-        category_key: c.key,
-        category_label: c.label,
-        status: c.status,
-        problem_description: c.problem_description,
-        sort_order: i,
-      }));
+      // 3. Category results
       const { error: catErr } = await supabase
         .from('inspection_categories')
         .insert(categoryRows);
       if (catErr) throw catErr;
+
+      // 4. Photo records
+      if (photoRows.length > 0) {
+        const { error: photoErr } = await supabase
+          .from('inspection_photos')
+          .insert(photoRows);
+        if (photoErr) throw photoErr;
+      }
 
       setGpsRecorded(gps.latitude != null);
       setScreen('done');
