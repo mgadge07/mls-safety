@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import jsQR from 'jsqr';
 import { COLOR, button } from '../theme';
 import { supabase } from '../lib/supabase';
 
@@ -7,9 +8,16 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
   const [manualNumber, setManualNumber] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // 'starting' | 'active' | 'unavailable'
+  const [cameraState, setCameraState] = useState('starting');
+
+  const videoRef = useRef(null);
+  const busyRef = useRef(false);
+  const lastScanRef = useRef({ text: null, at: 0 });
 
   async function lookupUnit(number) {
     setBusy(true);
+    busyRef.current = true;
     setError(null);
     try {
       const table = unitType === 'vehicle' ? 'vehicles' : 'trailers';
@@ -24,7 +32,7 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
 
       if (qErr) throw qErr;
       if (!data) {
-        setError(`No active ${unitType} found with number "${number}"`);
+        setError(`No active ${unitType} found with number "${number.trim()}"`);
         return;
       }
       onSuccess(data);
@@ -32,15 +40,83 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
       setError(e.message || 'Lookup failed');
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   }
 
-  // Temporary: simulate a successful QR scan for testing
-  function simulateScan() {
-    // In real build this will be replaced by html5-qrcode
-    const demoNumber = unitType === 'vehicle' ? 'V-104' : 'T-201';
-    lookupUnit(demoNumber);
+  function handleScan(text) {
+    const now = Date.now();
+    // Ignore repeats of the same code within 3 seconds so a failed lookup
+    // doesn't fire over and over while the label is still in frame.
+    if (lastScanRef.current.text === text && now - lastScanRef.current.at < 3000) return;
+    lastScanRef.current = { text, at: now };
+    lookupUnit(text);
   }
+
+  useEffect(() => {
+    let stream = null;
+    let raf = null;
+    let cancelled = false;
+    const video = videoRef.current;
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        video.srcObject = stream;
+        await video.play();
+        setCameraState('active');
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        let last = 0;
+
+        const tick = ts => {
+          if (cancelled) return;
+          if (ts - last > 200 && video.readyState === 4 && !busyRef.current) {
+            last = ts;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            if (canvas.width > 0) {
+              ctx.drawImage(video, 0, 0);
+              const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(img.data, img.width, img.height, {
+                inversionAttempts: 'dontInvert',
+              });
+              if (code && code.data && code.data.trim()) handleScan(code.data.trim());
+            }
+          }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch {
+        if (!cancelled) {
+          setCameraState('unavailable');
+          setManualMode(true);
+        }
+      }
+    }
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      start();
+    } else {
+      setCameraState('unavailable');
+      setManualMode(true);
+    }
+
+    return () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div style={{ padding: '24px', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -58,7 +134,6 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
         Point the camera at the code posted inside the unit.
       </p>
 
-      {/* Camera placeholder — will be replaced with real scanner */}
       <div style={{
         flex: 1,
         minHeight: 280,
@@ -71,25 +146,55 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
         justifyContent: 'center',
         marginBottom: 24,
         position: 'relative',
+        overflow: 'hidden',
       }}>
-        <div style={{
-          width: 200, height: 200,
-          border: `3px solid ${COLOR.accent}`,
-          borderRadius: 12,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: COLOR.textDim, fontSize: 14,
-        }}>
-          Camera view
-        </div>
-        <div style={{ marginTop: 16, color: COLOR.textFaint, fontSize: 13 }}>
-          QR scanner will appear here
-        </div>
-      </div>
+        <video
+          ref={videoRef}
+          muted
+          playsInline
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: cameraState === 'active' ? 'block' : 'none',
+          }}
+        />
 
-      {/* Temporary demo button */}
-      <button style={{ ...button('primary'), marginBottom: 12 }} onClick={simulateScan} disabled={busy}>
-        {busy ? 'Looking up…' : 'Simulate successful scan (demo)'}
-      </button>
+        {cameraState === 'active' && (
+          <div style={{
+            position: 'relative',
+            width: 200, height: 200,
+            border: `3px solid ${COLOR.accent}`,
+            borderRadius: 12,
+            boxShadow: '0 0 0 4000px rgba(0,0,0,.35)',
+          }} />
+        )}
+
+        {cameraState === 'starting' && (
+          <div style={{ color: COLOR.textDim, fontSize: 14, textAlign: 'center', padding: 20 }}>
+            Starting camera…
+          </div>
+        )}
+
+        {cameraState === 'unavailable' && (
+          <div style={{ color: COLOR.textDim, fontSize: 14, textAlign: 'center', padding: 20, lineHeight: 1.6 }}>
+            Camera unavailable.<br />
+            Allow camera access in your browser, or enter the unit number below.
+          </div>
+        )}
+
+        {cameraState === 'active' && busy && (
+          <div style={{
+            position: 'absolute', bottom: 12, left: 0, right: 0,
+            textAlign: 'center', color: COLOR.text, fontSize: 13,
+            textShadow: '0 1px 4px rgba(0,0,0,.8)',
+          }}>
+            Looking up…
+          </div>
+        )}
+      </div>
 
       <button
         style={{ background: 'none', border: 'none', color: COLOR.accent, fontSize: 14, marginBottom: 16, cursor: 'pointer' }}
@@ -115,7 +220,7 @@ export default function QrScanScreen({ unitType, onSuccess, onCancel }) {
             onClick={() => lookupUnit(manualNumber)}
             disabled={busy || !manualNumber.trim()}
           >
-            Look up
+            {busy ? 'Looking up…' : 'Look up'}
           </button>
         </div>
       )}
